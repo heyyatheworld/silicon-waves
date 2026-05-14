@@ -12,6 +12,8 @@ from config import Config, load_config
 from http_retry import request_callable_with_retries, request_with_retries
 from script_util import normalize_script
 
+__version__ = "1.0.0"
+
 logger = logging.getLogger(__name__)
 
 cfg: Config | None = None
@@ -115,7 +117,13 @@ def generate_script(current_track, next_track):
         model=c.openai_model,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.choices[0].message.content
+    if not response.choices:
+        raise ValueError("OpenAI returned no completion choices")
+    msg = response.choices[0].message
+    content = msg.content if msg else None
+    if content is None:
+        raise ValueError("OpenAI returned empty message content")
+    return content
 
 
 def generate_voice(text, output_path):
@@ -233,7 +241,7 @@ def run() -> None:
     setup_logging()
     init_runtime()
     c = _require_cfg()
-    logger.info("Robot host started")
+    logger.info("Silicon Waves %s — robot host started", __version__)
 
     fail_streak = 0
     while True:

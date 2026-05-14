@@ -93,5 +93,3 @@ def request_callable_with_retries(
 
         log_http_failure(last, context)
         return last
-
-    return last
