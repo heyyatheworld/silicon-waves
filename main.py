@@ -6,16 +6,29 @@ from elevenlabs import VoiceSettings
 from elevenlabs.client import ElevenLabs
 from openai import OpenAI
 
-from config import load_config
+from config import Config, load_config
 
-cfg = load_config()
+cfg: Config | None = None
+openai_client: OpenAI | None = None
+el_client: ElevenLabs | None = None
 
-openai_client = OpenAI(api_key=cfg.openai_api_key)
-el_client = ElevenLabs(api_key=cfg.elevenlabs_api_key)
+
+def init_runtime() -> None:
+    """Load config and API clients. Call once before any other functions."""
+    global cfg, openai_client, el_client
+    cfg = load_config()
+    openai_client = OpenAI(api_key=cfg.openai_api_key)
+    el_client = ElevenLabs(api_key=cfg.elevenlabs_api_key)
+
+
+def _require_cfg() -> Config:
+    assert cfg is not None and openai_client is not None and el_client is not None
+    return cfg
 
 
 def _auth_headers():
-    return {"Authorization": f"Bearer {cfg.azura_api_key}"}
+    c = _require_cfg()
+    return {"Authorization": f"Bearer {c.azura_api_key}"}
 
 
 def _log_http_failure(resp: requests.Response, context: str) -> None:
@@ -24,13 +37,23 @@ def _log_http_failure(resp: requests.Response, context: str) -> None:
     print(f"⚠️ HTTP {resp.status_code} [{context}]: {snippet!r}")
 
 
+def _unlink_if_exists(path: str | None) -> None:
+    if not path or not os.path.isfile(path):
+        return
+    try:
+        os.remove(path)
+    except OSError as e:
+        print(f"⚠️ Could not remove temp file {path!r}: {e}")
+
+
 def get_now_playing():
     """Fetch now-playing info via authorized request to the station."""
-    url = f"{cfg.base_url}/station/{cfg.station_id}/nowplaying"
+    c = _require_cfg()
+    url = f"{c.base_url}/station/{c.station_id}/nowplaying"
     headers = _auth_headers()
 
     try:
-        res = requests.get(url, headers=headers, timeout=cfg.request_timeout_sec)
+        res = requests.get(url, headers=headers, timeout=c.request_timeout_sec)
         if not res.ok:
             _log_http_failure(res, "nowplaying")
             return "Error", "Error", 0
@@ -68,6 +91,7 @@ def get_now_playing():
 
 def generate_script(current_track, next_track):
     """Generate host script via GPT."""
+    c = _require_cfg()
     prompt = f"""
     You are the charismatic host of the late-night cyberpunk radio "Silicon Waves".
     The track that just played: {current_track}.
@@ -76,7 +100,7 @@ def generate_script(current_track, next_track):
     Style: cynical, atmospheric, futuristic, neon. Do not use quotes.
     """
     response = openai_client.chat.completions.create(
-        model=cfg.openai_model,
+        model=c.openai_model,
         messages=[{"role": "user", "content": prompt}],
     )
     return response.choices[0].message.content
@@ -84,12 +108,13 @@ def generate_script(current_track, next_track):
 
 def generate_voice(text, output_path):
     """Convert text to speech."""
+    c = _require_cfg()
     print("🎙️ Synthesizing voice...")
     response = el_client.text_to_speech.convert(
-        voice_id=cfg.voice_id,
+        voice_id=c.voice_id,
         output_format="mp3_44100_128",
         text=text,
-        model_id=cfg.elevenlabs_tts_model,
+        model_id=c.elevenlabs_tts_model,
         voice_settings=VoiceSettings(
             stability=0.5,
             similarity_boost=0.8,
@@ -105,7 +130,8 @@ def generate_voice(text, output_path):
 
 def upload_to_azuracast(file_path, remote_folder):
     """Upload file to AzuraCast."""
-    url = f"{cfg.base_url}/station/{cfg.station_id}/files/upload"
+    c = _require_cfg()
+    url = f"{c.base_url}/station/{c.station_id}/files/upload"
     params = {"currentDirectory": remote_folder}
     headers = {**_auth_headers(), "Accept": "application/json"}
 
@@ -117,7 +143,7 @@ def upload_to_azuracast(file_path, remote_folder):
                 headers=headers,
                 params=params,
                 files=files,
-                timeout=cfg.request_timeout_sec,
+                timeout=c.request_timeout_sec,
             )
         except requests.RequestException as e:
             print(f"⚠️ upload request failed: {e}")
@@ -128,11 +154,12 @@ def upload_to_azuracast(file_path, remote_folder):
 
 
 def request_next_in_queue(remote_path):
+    c = _require_cfg()
     headers = {**_auth_headers(), "Accept": "application/json"}
-    timeout = cfg.request_timeout_sec
+    timeout = c.request_timeout_sec
 
     # 1. Find file ID first
-    files_url = f"{cfg.base_url}/station/{cfg.station_id}/files"
+    files_url = f"{c.base_url}/station/{c.station_id}/files"
     try:
         list_res = requests.get(files_url, headers=headers, timeout=timeout)
     except requests.RequestException as e:
@@ -161,7 +188,7 @@ def request_next_in_queue(remote_path):
 
     if media_id:
         # 2. Try POST to /queue with is_top if AzuraCast supports it
-        queue_url = f"{cfg.base_url}/station/{cfg.station_id}/queue"
+        queue_url = f"{c.base_url}/station/{c.station_id}/queue"
         payload = {
             "media_id": media_id,
             "is_top": True,  # Push to front of queue
@@ -178,7 +205,7 @@ def request_next_in_queue(remote_path):
             print(f"🎯 Speech pushed to front of queue (ID: {media_id})")
         else:
             # If POST not supported (405), use standard GET request
-            req_url = f"{cfg.base_url}/station/{cfg.station_id}/request/{media_id}"
+            req_url = f"{c.base_url}/station/{c.station_id}/request/{media_id}"
             try:
                 get_res = requests.get(req_url, headers=headers, timeout=timeout)
             except requests.RequestException as e:
@@ -192,35 +219,57 @@ def request_next_in_queue(remote_path):
         print("⚠️ Could not find file ID")
 
 
-# --- MAIN LOOP ---
-print("🎙️ Robot host started...")
+# Max extra sleep after repeated loop failures (exponential backoff).
+_ERROR_BACKOFF_CAP_SEC = 120
 
-while True:
-    try:
-        current, next_t, rem = get_now_playing()
-        print(f"Now: {current}. Time left: {rem} sec.")
 
-        if cfg.segment_rem_min < rem < cfg.segment_rem_max:
-            print("🤖 Generating segment...")
-            script = generate_script(current, next_t)
-            print(f"Script: {script}")
+def run() -> None:
+    """Main polling loop: observe now-playing, generate segments, upload and queue."""
+    init_runtime()
+    c = _require_cfg()
+    print("🎙️ Robot host started...")
 
-            file_name = f"speech_{int(time.time())}.mp3"
-            generate_voice(script, file_name)
+    fail_streak = 0
+    while True:
+        sleep_for = c.poll_interval_sec
+        file_name: str | None = None
+        try:
+            current, next_t, rem = get_now_playing()
+            print(f"Now: {current}. Time left: {rem} sec.")
 
-            if upload_to_azuracast(file_name, cfg.remote_dir):
-                print("✅ Uploaded. Waiting for indexing...")
-                time.sleep(cfg.upload_index_wait_sec)
+            if c.segment_rem_min < rem < c.segment_rem_max:
+                print("🤖 Generating segment...")
+                script = generate_script(current, next_t)
+                print(f"Script: {script}")
 
-                request_next_in_queue(f"{cfg.remote_dir}/{file_name}")
+                file_name = f"speech_{int(time.time())}.mp3"
+                try:
+                    generate_voice(script, file_name)
+                    if upload_to_azuracast(file_name, c.remote_dir):
+                        print("✅ Uploaded. Waiting for indexing...")
+                        time.sleep(c.upload_index_wait_sec)
 
-                if os.path.exists(file_name):
-                    os.remove(file_name)
+                        request_next_in_queue(f"{c.remote_dir}/{file_name}")
 
-                print("⏳ Waiting for next track...")
-                time.sleep(cfg.post_segment_sleep_sec)
+                        print("⏳ Waiting for next track...")
+                        time.sleep(c.post_segment_sleep_sec)
+                finally:
+                    _unlink_if_exists(file_name)
 
-    except Exception as e:
-        print(f"⚠️ Error: {e}")
+            fail_streak = 0
+        except Exception as e:
+            fail_streak += 1
+            print(f"⚠️ Error: {e}")
+            _unlink_if_exists(file_name)
+            # Exponential backoff so we do not hammer APIs when something is broken.
+            sleep_for = min(
+                _ERROR_BACKOFF_CAP_SEC,
+                c.poll_interval_sec * (2 ** min(fail_streak, 7)),
+            )
+            print(f"⏱️ Backing off {sleep_for:.0f}s (fail streak {fail_streak})")
 
-    time.sleep(cfg.poll_interval_sec)
+        time.sleep(sleep_for)
+
+
+if __name__ == "__main__":
+    run()

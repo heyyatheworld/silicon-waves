@@ -76,7 +76,9 @@ VOICE_ID=pNInz6obpgDQGcFmaJgB
 python main.py
 ```
 
-Leave it running; it will keep polling and generating host segments when the time window (40–70 seconds left) is hit.
+This starts `run()` from `main.py` only when executed as a script (importing `main` does not start the loop or load `.env`-backed clients). While it runs, it polls AzuraCast and generates segments when the configured time window is hit.
+
+**Resilience:** each segment’s local `speech_*.mp3` is removed in a `finally` block after synthesis/upload (or on error). If the main loop hits an unexpected exception several times in a row, sleep between iterations grows exponentially up to 120 seconds so APIs are not hammered; the streak resets after a successful iteration.
 
 ## Tuning
 
