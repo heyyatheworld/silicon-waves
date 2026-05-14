@@ -49,6 +49,16 @@ def load_config() -> Config:
         )
         sys.exit(1)
 
+    http_retry_max = int(_strip(os.getenv("HTTP_RETRY_MAX")) or "3")
+    if http_retry_max < 0:
+        print("HTTP_RETRY_MAX must be >= 0.", file=sys.stderr)
+        sys.exit(1)
+
+    script_max_chars = int(_strip(os.getenv("SCRIPT_MAX_CHARS")) or "1200")
+    if script_max_chars < 1:
+        print("SCRIPT_MAX_CHARS must be >= 1.", file=sys.stderr)
+        sys.exit(1)
+
     return Config(
         azura_api_key=_strip(os.getenv("AZURA_API_KEY")) or "",
         station_id=station_id,
@@ -65,6 +75,9 @@ def load_config() -> Config:
         openai_model=_strip(os.getenv("OPENAI_MODEL")) or "gpt-4o-mini",
         elevenlabs_tts_model=_strip(os.getenv("ELEVENLABS_TTS_MODEL")) or "eleven_multilingual_v2",
         request_timeout_sec=float(_strip(os.getenv("REQUEST_TIMEOUT_SEC")) or "30"),
+        http_retry_max=http_retry_max,
+        http_retry_backoff_sec=float(_strip(os.getenv("HTTP_RETRY_BACKOFF_SEC")) or "1.0"),
+        script_max_chars=script_max_chars,
     )
 
 
@@ -85,3 +98,6 @@ class Config:
     openai_model: str
     elevenlabs_tts_model: str
     request_timeout_sec: float
+    http_retry_max: int
+    http_retry_backoff_sec: float
+    script_max_chars: int

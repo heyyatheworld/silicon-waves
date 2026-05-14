@@ -9,6 +9,8 @@ from elevenlabs.client import ElevenLabs
 from openai import OpenAI
 
 from config import Config, load_config
+from http_retry import request_callable_with_retries, request_with_retries
+from script_util import normalize_script
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +50,6 @@ def _auth_headers():
     return {"Authorization": f"Bearer {c.azura_api_key}"}
 
 
-def _log_http_failure(resp: requests.Response, context: str) -> None:
-    """Log status and truncated body; never log request headers (may contain secrets)."""
-    snippet = (resp.text or "")[:500].replace("\r", " ").replace("\n", " ")
-    logger.warning("HTTP %s [%s]: %r", resp.status_code, context, snippet)
-
-
 def _unlink_if_exists(path: str | None) -> None:
     if not path or not os.path.isfile(path):
         return
@@ -70,9 +66,10 @@ def get_now_playing():
     headers = _auth_headers()
 
     try:
-        res = requests.get(url, headers=headers, timeout=c.request_timeout_sec)
-        if not res.ok:
-            _log_http_failure(res, "nowplaying")
+        res = request_with_retries(
+            "GET", url, config=c, context="nowplaying", headers=headers
+        )
+        if res is None or not res.ok:
             return "Error", "Error", 0
 
         try:
@@ -99,9 +96,6 @@ def get_now_playing():
             )
 
         return current, next_track, remaining
-    except requests.RequestException as e:
-        logger.warning("nowplaying request failed: %s", e)
-        return "Error", "Error", 0
     except (TypeError, ValueError, KeyError) as e:
         logger.warning("nowplaying unexpected payload: %s", e)
         return "Error", "Error", 0
@@ -153,39 +147,30 @@ def upload_to_azuracast(file_path, remote_folder):
     params = {"currentDirectory": remote_folder}
     headers = {**_auth_headers(), "Accept": "application/json"}
 
-    with open(file_path, "rb") as f:
-        files = {"file": (os.path.basename(file_path), f, "audio/mpeg")}
-        try:
-            res = requests.post(
+    def attempt():
+        with open(file_path, "rb") as f:
+            files = {"file": (os.path.basename(file_path), f, "audio/mpeg")}
+            return requests.post(
                 url,
                 headers=headers,
                 params=params,
                 files=files,
                 timeout=c.request_timeout_sec,
             )
-        except requests.RequestException as e:
-            logger.warning("upload request failed: %s", e)
-            return False
-    if not res.ok:
-        _log_http_failure(res, "upload")
-    return res.status_code == 200
+
+    res = request_callable_with_retries(attempt, config=c, context="upload")
+    return res is not None and res.ok
 
 
 def request_next_in_queue(remote_path):
     c = _require_cfg()
     headers = {**_auth_headers(), "Accept": "application/json"}
-    timeout = c.request_timeout_sec
 
-    # 1. Find file ID first
     files_url = f"{c.base_url}/station/{c.station_id}/files"
-    try:
-        list_res = requests.get(files_url, headers=headers, timeout=timeout)
-    except requests.RequestException as e:
-        logger.warning("files list request failed: %s", e)
-        return
-
-    if not list_res.ok:
-        _log_http_failure(list_res, "files list")
+    list_res = request_with_retries(
+        "GET", files_url, config=c, context="files list", headers=headers
+    )
+    if list_res is None or not list_res.ok:
         return
 
     try:
@@ -205,32 +190,34 @@ def request_next_in_queue(remote_path):
             break
 
     if media_id:
-        # 2. Try POST to /queue with is_top if AzuraCast supports it
         queue_url = f"{c.base_url}/station/{c.station_id}/queue"
         payload = {
             "media_id": media_id,
-            "is_top": True,  # Push to front of queue
+            "is_top": True,
         }
-        try:
-            res = requests.post(
-                queue_url, json=payload, headers=headers, timeout=timeout
-            )
-        except requests.RequestException as e:
-            logger.warning("queue POST failed: %s", e)
+        res = request_with_retries(
+            "POST",
+            queue_url,
+            config=c,
+            context="queue",
+            json=payload,
+            headers=headers,
+        )
+
+        if res is None:
             return
 
         if res.status_code in [200, 201, 202]:
             logger.info("Speech pushed to front of queue (id=%s)", media_id)
         else:
-            # If POST not supported (405), use standard GET request
             req_url = f"{c.base_url}/station/{c.station_id}/request/{media_id}"
-            try:
-                get_res = requests.get(req_url, headers=headers, timeout=timeout)
-            except requests.RequestException as e:
-                logger.warning("queue GET fallback failed: %s", e)
+            get_res = request_with_retries(
+                "GET", req_url, config=c, context="request song", headers=headers
+            )
+            if get_res is None:
                 return
             if not get_res.ok:
-                _log_http_failure(get_res, "request song")
+                pass  # already logged by request_with_retries
             else:
                 logger.info("Speech added to queue via standard request")
     else:
@@ -258,29 +245,32 @@ def run() -> None:
 
             if c.segment_rem_min < rem < c.segment_rem_max:
                 logger.info("Generating segment (remaining in window)")
-                script = generate_script(current, next_t)
-                logger.info("Script: %s", script)
-
-                file_name = f"speech_{int(time.time())}.mp3"
+                raw = generate_script(current, next_t)
+                logger.info("Script (raw): %s", raw)
                 try:
-                    generate_voice(script, file_name)
-                    if upload_to_azuracast(file_name, c.remote_dir):
-                        logger.info("Uploaded; waiting for indexing")
-                        time.sleep(c.upload_index_wait_sec)
+                    script = normalize_script(raw, max_chars=c.script_max_chars)
+                except ValueError as e:
+                    logger.warning("Skipping segment: %s", e)
+                else:
+                    file_name = f"speech_{int(time.time())}.mp3"
+                    try:
+                        generate_voice(script, file_name)
+                        if upload_to_azuracast(file_name, c.remote_dir):
+                            logger.info("Uploaded; waiting for indexing")
+                            time.sleep(c.upload_index_wait_sec)
 
-                        request_next_in_queue(f"{c.remote_dir}/{file_name}")
+                            request_next_in_queue(f"{c.remote_dir}/{file_name}")
 
-                        logger.info("Waiting for next track cooldown")
-                        time.sleep(c.post_segment_sleep_sec)
-                finally:
-                    _unlink_if_exists(file_name)
+                            logger.info("Waiting for next track cooldown")
+                            time.sleep(c.post_segment_sleep_sec)
+                    finally:
+                        _unlink_if_exists(file_name)
 
             fail_streak = 0
         except Exception:
             fail_streak += 1
             logger.exception("Loop iteration failed (fail streak %s)", fail_streak)
             _unlink_if_exists(file_name)
-            # Exponential backoff so we do not hammer APIs when something is broken.
             sleep_for = min(
                 _ERROR_BACKOFF_CAP_SEC,
                 c.poll_interval_sec * (2 ** min(fail_streak, 7)),

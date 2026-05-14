@@ -58,6 +58,9 @@ An AI radio host for a cyberpunk-style internet radio station. It watches your [
 | `ELEVENLABS_TTS_MODEL`     | `eleven_multilingual_v2` | ElevenLabs TTS model |
 | `REQUEST_TIMEOUT_SEC`      | `30`    | Seconds for each AzuraCast HTTP request (`requests` timeout) |
 | `LOG_LEVEL`                | `INFO`  | Root log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `HTTP_RETRY_MAX`           | `3`     | Extra attempts for AzuraCast requests on network errors or `429` / `5xx` (not for `401` / `403` / `404`) |
+| `HTTP_RETRY_BACKOFF_SEC`   | `1.0`   | Initial backoff between retries (doubles each retry) |
+| `SCRIPT_MAX_CHARS`         | `1200`  | Max characters sent to ElevenLabs after the model response is trimmed |
 
 Example `.env`:
 
@@ -96,12 +99,23 @@ The `silicon-waves` service uses `restart: unless-stopped`, so it restarts after
 
 **systemd (no Docker):** run `python main.py` from a virtualenv under a unit with `WorkingDirectory=` set to this repo, `EnvironmentFile=` pointing at your `.env`, and `Restart=on-failure` or `Restart=always`.
 
+## Tests
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+python -m pytest tests/
+```
+
+`requirements-dev.txt` pulls in runtime deps from `requirements.txt` plus `pytest`.
+
 ## Tuning
 
 - **Segment window**: Set `SEGMENT_REM_MIN` and `SEGMENT_REM_MAX` (exclusive bounds, same idea as the old `40 < rem < 70`).
 - **Poll interval / cooldown**: `POLL_INTERVAL_SEC` and `POST_SEGMENT_SLEEP_SEC` in `.env`.
 - **GPT style**: Edit the `prompt` in `generate_script()` in `main.py`.
-- **Logging**: `LOG_LEVEL` in `.env` (`INFO`, `DEBUG`, etc.).
+- **Retries / script size**: `HTTP_RETRY_MAX`, `HTTP_RETRY_BACKOFF_SEC`, `SCRIPT_MAX_CHARS` in `.env`.
 
 ## License
 
