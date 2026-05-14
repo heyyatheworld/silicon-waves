@@ -18,16 +18,31 @@ def _auth_headers():
     return {"Authorization": f"Bearer {cfg.azura_api_key}"}
 
 
+def _log_http_failure(resp: requests.Response, context: str) -> None:
+    """Log status and truncated body; never log request headers (may contain secrets)."""
+    snippet = (resp.text or "")[:500].replace("\r", " ").replace("\n", " ")
+    print(f"⚠️ HTTP {resp.status_code} [{context}]: {snippet!r}")
+
+
 def get_now_playing():
     """Fetch now-playing info via authorized request to the station."""
     url = f"{cfg.base_url}/station/{cfg.station_id}/nowplaying"
     headers = _auth_headers()
 
     try:
-        res = requests.get(url, headers=headers).json()
+        res = requests.get(url, headers=headers, timeout=cfg.request_timeout_sec)
+        if not res.ok:
+            _log_http_failure(res, "nowplaying")
+            return "Error", "Error", 0
+
+        try:
+            payload = res.json()
+        except ValueError as e:
+            print(f"⚠️ nowplaying: invalid JSON ({e})")
+            return "Error", "Error", 0
 
         # If response is a list, take first item; otherwise use as-is
-        data = res[0] if isinstance(res, list) else res
+        data = payload[0] if isinstance(payload, list) else payload
 
         np = data.get("now_playing", {})
         current = np.get("song", {}).get("text", "Unknown Song")
@@ -43,8 +58,11 @@ def get_now_playing():
             )
 
         return current, next_track, remaining
-    except Exception as e:
-        print(f"⚠️ API error: {e}")
+    except requests.RequestException as e:
+        print(f"⚠️ nowplaying request failed: {e}")
+        return "Error", "Error", 0
+    except (TypeError, ValueError, KeyError) as e:
+        print(f"⚠️ nowplaying unexpected payload: {e}")
         return "Error", "Error", 0
 
 
@@ -93,21 +111,52 @@ def upload_to_azuracast(file_path, remote_folder):
 
     with open(file_path, "rb") as f:
         files = {"file": (os.path.basename(file_path), f, "audio/mpeg")}
-        res = requests.post(url, headers=headers, params=params, files=files)
+        try:
+            res = requests.post(
+                url,
+                headers=headers,
+                params=params,
+                files=files,
+                timeout=cfg.request_timeout_sec,
+            )
+        except requests.RequestException as e:
+            print(f"⚠️ upload request failed: {e}")
+            return False
+    if not res.ok:
+        _log_http_failure(res, "upload")
     return res.status_code == 200
 
 
 def request_next_in_queue(remote_path):
     headers = {**_auth_headers(), "Accept": "application/json"}
+    timeout = cfg.request_timeout_sec
 
     # 1. Find file ID first
     files_url = f"{cfg.base_url}/station/{cfg.station_id}/files"
-    files_res = requests.get(files_url, headers=headers).json()
+    try:
+        list_res = requests.get(files_url, headers=headers, timeout=timeout)
+    except requests.RequestException as e:
+        print(f"⚠️ files list request failed: {e}")
+        return
+
+    if not list_res.ok:
+        _log_http_failure(list_res, "files list")
+        return
+
+    try:
+        files_res = list_res.json()
+    except ValueError as e:
+        print(f"⚠️ files list: invalid JSON ({e})")
+        return
+
+    if not isinstance(files_res, list):
+        print("⚠️ files list: expected a JSON array")
+        return
 
     media_id = None
     for item in files_res:
-        if item["path"] == remote_path:
-            media_id = item["unique_id"]
+        if item.get("path") == remote_path:
+            media_id = item.get("unique_id")
             break
 
     if media_id:
@@ -117,15 +166,28 @@ def request_next_in_queue(remote_path):
             "media_id": media_id,
             "is_top": True,  # Push to front of queue
         }
-        res = requests.post(queue_url, json=payload, headers=headers)
+        try:
+            res = requests.post(
+                queue_url, json=payload, headers=headers, timeout=timeout
+            )
+        except requests.RequestException as e:
+            print(f"⚠️ queue POST failed: {e}")
+            return
 
         if res.status_code in [200, 201, 202]:
             print(f"🎯 Speech pushed to front of queue (ID: {media_id})")
         else:
             # If POST not supported (405), use standard GET request
             req_url = f"{cfg.base_url}/station/{cfg.station_id}/request/{media_id}"
-            requests.get(req_url, headers=headers)
-            print("🎯 Speech added to queue via standard request")
+            try:
+                get_res = requests.get(req_url, headers=headers, timeout=timeout)
+            except requests.RequestException as e:
+                print(f"⚠️ queue GET fallback failed: {e}")
+                return
+            if not get_res.ok:
+                _log_http_failure(get_res, "request song")
+            else:
+                print("🎯 Speech added to queue via standard request")
     else:
         print("⚠️ Could not find file ID")
 

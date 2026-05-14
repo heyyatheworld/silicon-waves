@@ -56,7 +56,7 @@ An AI radio host for a cyberpunk-style internet radio station. It watches your [
 | `POST_SEGMENT_SLEEP_SEC`   | `70`    | Cooldown after a successful segment |
 | `OPENAI_MODEL`             | `gpt-4o-mini` | Chat completion model |
 | `ELEVENLABS_TTS_MODEL`     | `eleven_multilingual_v2` | ElevenLabs TTS model |
-| `REQUEST_TIMEOUT_SEC`      | `30`    | HTTP client timeout (used in a later stability step) |
+| `REQUEST_TIMEOUT_SEC`      | `30`    | Seconds for each AzuraCast HTTP request (`requests` timeout) |
 
 Example `.env`:
 
