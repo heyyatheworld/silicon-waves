@@ -83,6 +83,19 @@ This starts `run()` from `main.py` only when executed as a script (importing `ma
 
 **Logging:** messages go through Python’s `logging` module (ISO-like timestamps, level, logger name). Set `LOG_LEVEL=DEBUG` in `.env` for verbose output; default is `INFO`.
 
+## Run with Docker
+
+[Docker](https://docs.docker.com/get-docker/) and Docker Compose v2 are required. Put a `.env` file in the project root (same variables as local run); it is **not** baked into the image—Compose passes it at runtime.
+
+```bash
+docker compose up --build -d
+docker compose logs -f
+```
+
+The `silicon-waves` service uses `restart: unless-stopped`, so it restarts after crashes or host reboot until you run `docker compose down`.
+
+**systemd (no Docker):** run `python main.py` from a virtualenv under a unit with `WorkingDirectory=` set to this repo, `EnvironmentFile=` pointing at your `.env`, and `Restart=on-failure` or `Restart=always`.
+
 ## Tuning
 
 - **Segment window**: Set `SEGMENT_REM_MIN` and `SEGMENT_REM_MAX` (exclusive bounds, same idea as the old `40 < rem < 70`).
