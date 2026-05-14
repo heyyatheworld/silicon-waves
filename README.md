@@ -57,6 +57,7 @@ An AI radio host for a cyberpunk-style internet radio station. It watches your [
 | `OPENAI_MODEL`             | `gpt-4o-mini` | Chat completion model |
 | `ELEVENLABS_TTS_MODEL`     | `eleven_multilingual_v2` | ElevenLabs TTS model |
 | `REQUEST_TIMEOUT_SEC`      | `30`    | Seconds for each AzuraCast HTTP request (`requests` timeout) |
+| `LOG_LEVEL`                | `INFO`  | Root log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 Example `.env`:
 
@@ -80,12 +81,14 @@ This starts `run()` from `main.py` only when executed as a script (importing `ma
 
 **Resilience:** each segment’s local `speech_*.mp3` is removed in a `finally` block after synthesis/upload (or on error). If the main loop hits an unexpected exception several times in a row, sleep between iterations grows exponentially up to 120 seconds so APIs are not hammered; the streak resets after a successful iteration.
 
+**Logging:** messages go through Python’s `logging` module (ISO-like timestamps, level, logger name). Set `LOG_LEVEL=DEBUG` in `.env` for verbose output; default is `INFO`.
+
 ## Tuning
 
 - **Segment window**: Set `SEGMENT_REM_MIN` and `SEGMENT_REM_MAX` (exclusive bounds, same idea as the old `40 < rem < 70`).
 - **Poll interval / cooldown**: `POLL_INTERVAL_SEC` and `POST_SEGMENT_SLEEP_SEC` in `.env`.
 - **GPT style**: Edit the `prompt` in `generate_script()` in `main.py`.
-- **Voice / models**: `VOICE_ID`, `OPENAI_MODEL`, and `ELEVENLABS_TTS_MODEL` in `.env`.
+- **Logging**: `LOG_LEVEL` in `.env` (`INFO`, `DEBUG`, etc.).
 
 ## License
 
