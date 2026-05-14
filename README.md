@@ -33,14 +33,30 @@ An AI radio host for a cyberpunk-style internet radio station. It watches your [
 
 ### Environment variables
 
-| Variable            | Description                                      |
-|---------------------|--------------------------------------------------|
-| `AZURA_API_KEY`     | AzuraCast API key (from Profile → API Keys)      |
-| `STATION_ID`        | AzuraCast station ID (default: `1`)              |
-| `BASE_URL`          | AzuraCast API base URL, e.g.                     |
-| `OPENAI_API_KEY`    | OpenAI API key                                   |
-| `ELEVENLABS_API_KEY`| ElevenLabs API key                               |
-| `VOICE_ID`          | ElevenLabs voice ID (e.g. from Voice Library)    |
+**Required**
+
+| Variable             | Description                                      |
+|----------------------|--------------------------------------------------|
+| `AZURA_API_KEY`      | AzuraCast API key (from Profile → API Keys)      |
+| `BASE_URL`           | AzuraCast API base URL (no default), e.g. `https://radio.example/api` |
+| `OPENAI_API_KEY`     | OpenAI API key                                   |
+| `ELEVENLABS_API_KEY` | ElevenLabs API key                               |
+| `VOICE_ID`           | ElevenLabs voice ID (e.g. from Voice Library)    |
+
+**Optional** (defaults suit a typical install)
+
+| Variable                   | Default | Description |
+|----------------------------|---------|-------------|
+| `STATION_ID`               | `1`     | Station ID |
+| `REMOTE_DIR`               | `ai_voiceovers` | AzuraCast media folder for uploads |
+| `POLL_INTERVAL_SEC`        | `15`    | Seconds between now-playing polls |
+| `SEGMENT_REM_MIN`          | `40`    | Lower bound (exclusive) for “seconds left” window |
+| `SEGMENT_REM_MAX`          | `70`    | Upper bound (exclusive) for that window |
+| `UPLOAD_INDEX_WAIT_SEC`    | `5`     | Wait after upload before queue request |
+| `POST_SEGMENT_SLEEP_SEC`   | `70`    | Cooldown after a successful segment |
+| `OPENAI_MODEL`             | `gpt-4o-mini` | Chat completion model |
+| `ELEVENLABS_TTS_MODEL`     | `eleven_multilingual_v2` | ElevenLabs TTS model |
+| `REQUEST_TIMEOUT_SEC`      | `30`    | HTTP client timeout (used in a later stability step) |
 
 Example `.env`:
 
@@ -64,10 +80,10 @@ Leave it running; it will keep polling and generating host segments when the tim
 
 ## Tuning
 
-- **Segment window**: In `main.py`, the condition `40 < rem < 70` controls when a segment is generated. Adjust to match your track lengths and encoding delay.
-- **Poll interval**: `time.sleep(15)` is how often it checks now-playing; `time.sleep(70)` is the cooldown after a successful segment.
-- **GPT style**: Edit the `prompt` in `generate_script()` to change the host personality and tone.
-- **Voice**: Change `VOICE_ID` in `.env` to use another ElevenLabs voice.
+- **Segment window**: Set `SEGMENT_REM_MIN` and `SEGMENT_REM_MAX` (exclusive bounds, same idea as the old `40 < rem < 70`).
+- **Poll interval / cooldown**: `POLL_INTERVAL_SEC` and `POST_SEGMENT_SLEEP_SEC` in `.env`.
+- **GPT style**: Edit the `prompt` in `generate_script()` in `main.py`.
+- **Voice / models**: `VOICE_ID`, `OPENAI_MODEL`, and `ELEVENLABS_TTS_MODEL` in `.env`.
 
 ## License
 
